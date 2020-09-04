@@ -8,7 +8,7 @@ use std::process::exit;
 
 const PNG_HEADER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct IHDR {
     image_width: u32,
     image_height: u32,
@@ -19,12 +19,19 @@ struct IHDR {
     interlace_method: u8,
 }
 
+#[derive(Debug, Clone)]
+struct BKGD {
+    r: u16,
+    g: u16,
+    b: u16,
+}
+
 fn main() -> io::Result<()> {
     println!("");
     let mut file = File::open("270.png")?;
 
     let mut header = [0; 8];
-    file.read(&mut header[..])?;
+    file.read(&mut header)?;
     if header == PNG_HEADER {
         println!("png detected\n")
     } else {
@@ -45,18 +52,19 @@ fn main() -> io::Result<()> {
             }
             "IEND" => println!("finished reading file\n"),
             "bKGD" => {
-                bkgd = Some(read_bkgd_data(&file, &chunk_header, &ihdr)?);
+                let _ihdr = ihdr.clone().unwrap();
+                bkgd = Some(read_bkgd_data(&file, &chunk_header, &_ihdr)?);
             }
             _ => {
                 let mut _buffer = vec![0u8; chunk_header.size as usize];
-                file.read(&mut _buffer[..])?;
+                file.read(&mut _buffer)?;
                 println!("{} chunk ignored...\n", chunk_header.chunk_type);
             }
         }
 
         // I don't care about the crc
         let mut _crc = [0; 4];
-        file.read(&mut _crc[..])?;
+        file.read(&mut _crc)?;
 
         if chunk_header.size == 0 {
             done = true;
@@ -64,7 +72,11 @@ fn main() -> io::Result<()> {
     }
 
     if let Some(ihdr) = ihdr {
-        println!("{:?}", ihdr)
+        println!("{:?}", ihdr);
+    }
+
+    if let Some(bkgd) = bkgd {
+        println!("{:?}", bkgd);
     }
 
     Ok(())
@@ -79,8 +91,8 @@ struct ChunkHeader {
 fn read_chunk_header(mut file: &File) -> Result<ChunkHeader, std::io::Error> {
     let mut chunk_size = [0u8; 4];
     let mut chunk_type = [0u8; 4];
-    file.read(&mut chunk_size[..])?;
-    file.read(&mut chunk_type[..])?;
+    file.read(&mut chunk_size)?;
+    file.read(&mut chunk_type)?;
     return Ok(ChunkHeader {
         size: u32::from_be_bytes(chunk_size),
         chunk_type: String::from_utf8(chunk_type.to_vec()).unwrap(),
@@ -96,13 +108,13 @@ fn read_ihdr_data(mut file: &File) -> Result<IHDR, std::io::Error> {
     let mut filter_method = [0u8; 1];
     let mut interlace_method = [0u8; 1];
 
-    file.read(&mut width[..])?;
-    file.read(&mut height[..])?;
-    file.read(&mut bit_depth[..])?;
-    file.read(&mut color_type[..])?;
-    file.read(&mut compression_method[..])?;
-    file.read(&mut filter_method[..])?;
-    file.read(&mut interlace_method[..])?;
+    file.read(&mut width)?;
+    file.read(&mut height)?;
+    file.read(&mut bit_depth)?;
+    file.read(&mut color_type)?;
+    file.read(&mut compression_method)?;
+    file.read(&mut filter_method)?;
+    file.read(&mut interlace_method)?;
 
     return Ok(IHDR {
         image_width: u32::from_be_bytes(width),
@@ -115,15 +127,31 @@ fn read_ihdr_data(mut file: &File) -> Result<IHDR, std::io::Error> {
     });
 }
 
-struct BKGD {}
-
 fn read_bkgd_data(
     mut file: &File,
     header: &ChunkHeader,
-    ihdr: &Option<IHDR>,
+    ihdr: &IHDR,
 ) -> Result<BKGD, std::io::Error> {
-    let mut _buf = vec![0u8; header.size as usize];
-    file.read(&mut _buf)?;
+    if ihdr.color_type == 6 {
+        let mut r = [0u8; 2];
+        let mut g = [0u8; 2];
+        let mut b = [0u8; 2];
+        file.read(&mut r)?;
+        file.read(&mut g)?;
+        file.read(&mut b)?;
+        return Ok(BKGD {
+            r: u16::from_be_bytes(r),
+            g: u16::from_be_bytes(g),
+            b: u16::from_be_bytes(b),
+        });
+    } else {
+        println!(
+            "color_type {} is not supported. ignoring bKGD",
+            ihdr.color_type
+        );
+        let mut _buf = vec![0u8; header.size as usize];
+        file.read(&mut _buf)?;
+    }
 
-    Ok(BKGD {})
+    Ok(BKGD { r: 0, g: 0, b: 0 })
 }
