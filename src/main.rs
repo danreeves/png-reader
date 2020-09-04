@@ -71,6 +71,8 @@ fn main() -> io::Result<()> {
         }
     }
 
+    println!("data... ");
+
     if let Some(ihdr) = ihdr {
         println!("{:?}", ihdr);
     }
