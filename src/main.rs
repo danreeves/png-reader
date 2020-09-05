@@ -6,6 +6,8 @@ use std::io;
 use std::io::prelude::*;
 use std::process::exit;
 
+mod window;
+
 const PNG_HEADER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
 #[derive(Debug, Clone)]
@@ -39,21 +41,47 @@ fn main() -> io::Result<()> {
         exit(1);
     }
 
-    let mut ihdr = None;
-    let mut bkgd = None;
+    let ihdr_chunk_header = read_chunk_header(&file)?;
+    if ihdr_chunk_header.chunk_type != "IHDR" {
+        println!("ihdr chunk not found. aborting...");
+        exit(1);
+    }
+    let ihdr = read_ihdr_data(&file)?;
 
+    let mut image_data = vec![[0u8; 4]];
+
+    let mut bkgd = None;
     let mut done = false;
+
     while !done {
         let chunk_header = read_chunk_header(&file)?;
 
         match chunk_header.chunk_type.as_str() {
             "IHDR" => {
-                ihdr = Some(read_ihdr_data(&file)?);
+                println!("multiple ihdr headers. aborting....");
+                exit(1);
             }
             "IEND" => println!("finished reading file\n"),
             "bKGD" => {
-                let _ihdr = ihdr.clone().unwrap();
-                bkgd = Some(read_bkgd_data(&file, &chunk_header, &_ihdr)?);
+                bkgd = Some(read_bkgd_data(&file, &chunk_header, &ihdr)?);
+            }
+            "IDAT" => {
+                let px = chunk_header.size / 4;
+                let lines = px / ihdr.image_width;
+                println!("chunk contains {} pixels over {} lines", px, lines);
+                if lines > 0 {
+                    for _ in 0..lines {
+                        for _ in 0..ihdr.image_width {
+                            let mut buf = [0u8; 4];
+                            file.read(&mut buf)?;
+                            image_data.push(buf.to_owned());
+                        }
+                    }
+                } else {
+                    // Ignoring idat chunks which don't fill a line
+                    let mut _buf = vec![0u8; chunk_header.size as usize];
+                    file.read(&mut _buf)?;
+                }
             }
             _ => {
                 let mut _buffer = vec![0u8; chunk_header.size as usize];
@@ -62,25 +90,40 @@ fn main() -> io::Result<()> {
             }
         }
 
-        // I don't care about the crc
-        let mut _crc = [0; 4];
-        file.read(&mut _crc)?;
+        discard_crc(&file)?;
 
         if chunk_header.size == 0 {
             done = true;
         }
     }
 
+    window::run(
+        ihdr.image_width,
+        ihdr.image_height,
+        move |frame: &mut [u8]| {
+            let image_data = image_data.clone();
+            for (i, pixel) in frame.chunks_exact_mut(4).enumerate() {
+                let rgba = image_data.get(i).unwrap_or(&[0, 0, 0, 0]);
+                pixel.copy_from_slice(&*rgba);
+            }
+        },
+    );
+
     println!("data... ");
 
-    if let Some(ihdr) = ihdr {
-        println!("{:?}", ihdr);
-    }
+    println!("{:?}", ihdr);
 
     if let Some(bkgd) = bkgd {
         println!("{:?}", bkgd);
     }
 
+    Ok(())
+}
+
+fn discard_crc(mut file: &File) -> Result<(), io::Error> {
+    // I don't care about the crc
+    let mut _crc = [0; 4];
+    file.read(&mut _crc)?;
     Ok(())
 }
 
@@ -90,7 +133,7 @@ struct ChunkHeader {
     chunk_type: String,
 }
 
-fn read_chunk_header(mut file: &File) -> Result<ChunkHeader, std::io::Error> {
+fn read_chunk_header(mut file: &File) -> Result<ChunkHeader, io::Error> {
     let mut chunk_size = [0u8; 4];
     let mut chunk_type = [0u8; 4];
     file.read(&mut chunk_size)?;
@@ -101,7 +144,7 @@ fn read_chunk_header(mut file: &File) -> Result<ChunkHeader, std::io::Error> {
     });
 }
 
-fn read_ihdr_data(mut file: &File) -> Result<IHDR, std::io::Error> {
+fn read_ihdr_data(mut file: &File) -> Result<IHDR, io::Error> {
     let mut width = [0u8; 4];
     let mut height = [0u8; 4];
     let mut bit_depth = [0u8; 1];
@@ -118,6 +161,8 @@ fn read_ihdr_data(mut file: &File) -> Result<IHDR, std::io::Error> {
     file.read(&mut filter_method)?;
     file.read(&mut interlace_method)?;
 
+    discard_crc(&file)?;
+
     return Ok(IHDR {
         image_width: u32::from_be_bytes(width),
         image_height: u32::from_be_bytes(height),
@@ -129,11 +174,7 @@ fn read_ihdr_data(mut file: &File) -> Result<IHDR, std::io::Error> {
     });
 }
 
-fn read_bkgd_data(
-    mut file: &File,
-    header: &ChunkHeader,
-    ihdr: &IHDR,
-) -> Result<BKGD, std::io::Error> {
+fn read_bkgd_data(mut file: &File, header: &ChunkHeader, ihdr: &IHDR) -> Result<BKGD, io::Error> {
     if ihdr.color_type == 6 {
         let mut r = [0u8; 2];
         let mut g = [0u8; 2];
