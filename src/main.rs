@@ -1,6 +1,8 @@
 #![deny(clippy::all)]
 #![forbid(unsafe_code)]
 
+use miniz_oxide::inflate::decompress_to_vec;
+use std::cmp::{max, min};
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
@@ -48,13 +50,21 @@ fn main() -> io::Result<()> {
     }
     let ihdr = read_ihdr_data(&file)?;
 
-    let mut image_data = vec![[0u8; 4]];
+    println!("{:?}", ihdr);
+
+    let mut image_data = vec![];
+    let mut image_data_size = 0;
 
     let mut bkgd = None;
     let mut done = false;
 
     while !done {
         let chunk_header = read_chunk_header(&file)?;
+
+        println!(
+            "{} chunk size {}",
+            chunk_header.chunk_type, chunk_header.size
+        );
 
         match chunk_header.chunk_type.as_str() {
             "IHDR" => {
@@ -66,22 +76,10 @@ fn main() -> io::Result<()> {
                 bkgd = Some(read_bkgd_data(&file, &chunk_header, &ihdr)?);
             }
             "IDAT" => {
-                let px = chunk_header.size / 4;
-                let lines = px / ihdr.image_width;
-                println!("chunk contains {} pixels over {} lines", px, lines);
-                if lines > 0 {
-                    for _ in 0..lines {
-                        for _ in 0..ihdr.image_width {
-                            let mut buf = [0u8; 4];
-                            file.read(&mut buf)?;
-                            image_data.push(buf.to_owned());
-                        }
-                    }
-                } else {
-                    // Ignoring idat chunks which don't fill a line
-                    let mut _buf = vec![0u8; chunk_header.size as usize];
-                    file.read(&mut _buf)?;
-                }
+                image_data_size = image_data_size + chunk_header.size;
+                let mut data = vec![0u8; chunk_header.size as usize];
+                let n = file.read(&mut data)?;
+                image_data.append(&mut data);
             }
             _ => {
                 let mut _buffer = vec![0u8; chunk_header.size as usize];
@@ -97,32 +95,70 @@ fn main() -> io::Result<()> {
         }
     }
 
+    if let Some(bkgd) = bkgd {
+        println!("{:?}", bkgd);
+    }
+
+    let mut data = decompress_to_vec(&image_data[2..]).unwrap();
+
+    let mut pixel_count = 0.0;
+    let mut filter = 0;
+    let mut prev_byte = 0;
+    let mut byte_count = 0;
+    let filtered_data = data.iter().fold(vec![], |mut acc, byte| {
+        if pixel_count == 0.0 {
+            pixel_count = pixel_count + 0.25;
+            filter = *byte;
+            prev_byte = 0;
+            byte_count = 0;
+            println!("filter: {}", filter);
+            return acc;
+        }
+
+        if pixel_count == ihdr.image_width as f32 {
+            pixel_count = 0.0;
+        } else {
+            pixel_count = pixel_count + 0.25;
+        }
+
+        match filter {
+            0 => acc.push(byte.clone()),
+            1 => {
+                // this needs to be the corresponding pixel byte not just the previous byte
+                let prev_byte = if byte_count > 4 {
+                    acc.get(byte_count - 4).unwrap_or(&&0)
+                } else {
+                    &&0
+                };
+                println!("{}", prev_byte);
+                let new = max(prev_byte, byte) - min(prev_byte, byte);
+                acc.push(new);
+            }
+            _ => acc.push(byte.clone()),
+        }
+
+        byte_count = byte_count + 1;
+        return acc;
+    });
+
     window::run(
         ihdr.image_width,
         ihdr.image_height,
         move |frame: &mut [u8]| {
-            let image_data = image_data.clone();
+            let mut data = filtered_data.clone();
             for (i, pixel) in frame.chunks_exact_mut(4).enumerate() {
-                let rgba = image_data.get(i).unwrap_or(&[0, 0, 0, 0]);
-                pixel.copy_from_slice(&*rgba);
+                let rgba = data.drain(..4);
+                pixel.copy_from_slice(rgba.as_slice());
             }
         },
     );
-
-    println!("data... ");
-
-    println!("{:?}", ihdr);
-
-    if let Some(bkgd) = bkgd {
-        println!("{:?}", bkgd);
-    }
 
     Ok(())
 }
 
 fn discard_crc(mut file: &File) -> Result<(), io::Error> {
     // I don't care about the crc
-    let mut _crc = [0; 4];
+    let mut _crc = [0u8; 4];
     file.read(&mut _crc)?;
     Ok(())
 }

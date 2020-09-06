@@ -5,9 +5,9 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 use winit_input_helper::WinitInputHelper;
 
-pub fn run<F: 'static>(width: u32, height: u32, draw: F) -> Result<(), Error>
+pub fn run<F: 'static>(width: u32, height: u32, mut draw: F) -> Result<(), Error>
 where
-    F: Fn(&mut [u8]) -> (),
+    F: FnMut(&mut [u8]) -> (),
 {
     println!("starting....");
 
